@@ -1,59 +1,59 @@
 # BI-AI Link Data Lake
 
-This repository contains the data lake synchronization layer that acts as a real-time bridge between **Data Formulator (rivus-ai)** and **Metatron (rivus-bi)**.
+This repository contains the **Data Lake synchronization layer** that acts as a real-time bridge between **Metatron (rivus-bi)** and **Data Formulator (rivus-ai)**.
 
-## Architecture
+## The Data Lake Architecture
 
-The project relies on a message-driven architecture to achieve near real-time synchronization (under 1 minute) between the two platforms.
+Because **rivus-bi** does not have a native option to export data, this project sets up a real Data Lake using **MinIO** (an S3-compatible Object Storage system) to act as the centralized hub.
 
-**Stack:**
-- **Python / FastAPI**: Exposes a REST API (`/sync`) to receive data events from either platform.
-- **Kafka / Zookeeper**: The message broker acting as the data lake's real-time events backbone.
-- **Background Worker**: A Kafka consumer script (`sync_worker.py`) that reads synchronization events from Kafka and handles pushing or applying them to the target platform.
+**How it works (Real Integration, No Simulation):**
+1. **Extraction**: A Python background worker (`sync_worker.py`) directly connects to rivus-bi's underlying metadata database (MariaDB/MySQL). It queries the database every 60 seconds to detect any new data or modifications that came from other resources or user actions.
+2. **Data Lake Storage**: The worker pulls this data into a Pandas DataFrame and physically exports it as a CSV (or JSON/Parquet) file directly into the **MinIO Data Lake** bucket (`rivus-data`).
+3. **Notification/Sync**: Once the file is physically secured in the Data Lake, the worker sends an API request to **rivus-ai**, passing the MinIO URL of the new data. Rivus-ai then ingests this file instantly. 
 
-## How It Works
-
-1. When a change happens in **rivus-bi**, a POST request is sent to `http://<sync-api-url>:8000/sync`.
-2. The `sync-api` (FastAPI) receives this payload and produces a message to the `data_sync_events` Kafka topic.
-3. The `sync-worker` (Kafka Consumer) immediately receives the message, processes it, and updates **rivus-ai** via its respective APIs or databases.
+This ensures that within 1 minute, any new data entering rivus-bi is physically mirrored in the Data Lake and available in rivus-ai automatically.
 
 ## Getting Started
 
 ### Prerequisites
 - Docker and Docker Compose
+- The actual connection strings to your `rivus-bi` MariaDB/MySQL server.
+- The actual API endpoint for `rivus-ai` to trigger a refresh.
+
+### Setup
+
+Open `docker-compose.yml` and modify the environment variables under `sync-worker` to match your actual servers:
+
+```yaml
+      - MYSQL_HOST=your_rivus_bi_mysql_host
+      - MYSQL_PORT=3306
+      - MYSQL_USER=root
+      - MYSQL_PASSWORD=root_password
+      - MYSQL_DATABASE=metatron
+      - RIVUS_AI_URL=http://your_rivus_ai_host:port/api/refresh
+```
+
+*Note: You must also modify the SQL query inside `sync_worker.py` (around line 38) to select the exact tables (e.g., `datasource` or `dataset`) you want to extract from Metatron.*
 
 ### Running the Services
 
-To spin up the entire data lake bridge (Kafka, Zookeeper, API, Worker), run:
+To spin up the Data Lake (MinIO) and the Synchronization Worker:
 
 ```bash
 docker-compose up --build -d
 ```
 
+### Accessing the Data Lake
+
+You can manually inspect the Data Lake and see the files being transferred from rivus-bi:
+- **MinIO Console**: `http://localhost:9001`
+- **Username**: `admin`
+- **Password**: `password123`
+
 ### Checking Logs
 
-To view the real-time processing of events by the worker:
+To ensure the worker is successfully extracting from MySQL and uploading to MinIO:
 
 ```bash
 docker-compose logs -f sync-worker
 ```
-
-### Testing the Synchronization
-
-You can simulate an event coming from `rivus-bi` intended for `rivus-ai` by sending a cURL request:
-
-```bash
-curl -X POST "http://localhost:8000/sync" \
-     -H "Content-Type: application/json" \
-     -d '{
-           "source": "rivus-bi",
-           "target": "rivus-ai",
-           "entity_id": "chart_12345",
-           "data": {
-             "chart_type": "bar",
-             "updated_at": "2026-06-08T22:00:00Z"
-           }
-         }'
-```
-
-You should see the worker process this event and output success in the Docker logs.

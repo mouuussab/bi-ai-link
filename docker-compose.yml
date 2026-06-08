@@ -1,42 +1,49 @@
 version: '3.8'
 
 services:
-  zookeeper:
-    image: confluentinc/cp-zookeeper:latest
+  minio:
+    image: minio/minio:latest
+    container_name: datalake-minio
     environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password123
     ports:
-      - 22181:2181
-
-  kafka:
-    image: confluentinc/cp-kafka:latest
-    depends_on:
-      - zookeeper
-    ports:
-      - 29092:29092
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-
-  sync-api:
-    build: .
-    command: uvicorn main:app --host 0.0.0.0 --port 8000
+      - "9000:9000"
+      - "9001:9001"
+    command: server /data --console-address ":9001"
     volumes:
-      - .:/app
-    ports:
-      - 8000:8000
+      - minio_data:/data
+
+  minio-init:
+    image: minio/mc:latest
     depends_on:
-      - kafka
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5;
+      /usr/bin/mc alias set datalake http://minio:9000 admin password123;
+      /usr/bin/mc mb datalake/rivus-data;
+      /usr/bin/mc anonymous set public datalake/rivus-data;
+      exit 0;
+      "
 
   sync-worker:
     build: .
-    command: python sync_worker.py
+    container_name: datalake-sync-worker
+    environment:
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=admin
+      - MINIO_SECRET_KEY=password123
+      - MYSQL_HOST=your_rivus_bi_mysql_host
+      - MYSQL_PORT=3306
+      - MYSQL_USER=root
+      - MYSQL_PASSWORD=root_password
+      - MYSQL_DATABASE=metatron
+      - RIVUS_AI_URL=http://your_rivus_ai_host:port/api/refresh
+    depends_on:
+      - minio
     volumes:
       - .:/app
-    depends_on:
-      - kafka
+
+volumes:
+  minio_data:
