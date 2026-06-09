@@ -97,20 +97,24 @@ def extract_from_rivus_bi():
         df = pd.DataFrame(mock_data)
         return df, filename
 
-def get_druid_datasources():
-    print(f"[{datetime.now()}] Fetching list of datasources from Apache Druid...")
+def get_metatron_datasources():
+    print(f"[{datetime.now()}] Fetching list of datasources from Metatron MariaDB...")
     try:
-        if DRUID_HOST == "localhost" or not DRUID_HOST:
-            return []
-        import requests
-        query = "SELECT datasource FROM sys.segments WHERE is_published = 1 AND is_available = 1 GROUP BY 1"
-        url = f"http://{DRUID_HOST}:{DRUID_PORT}/druid/v2/sql/"
-        response = requests.post(url, json={"query": query}, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        return [row['datasource'] for row in data]
+        import mysql.connector
+        conn = mysql.connector.connect(
+            host=DRUID_HOST,  # Metatron MariaDB is on the same host
+            port=3306,
+            user='polaris',
+            password='polaris',
+            database='polaris_v2'
+        )
+        cursor = conn.cursor()
+        cursor.execute("SELECT ds_engine_name FROM datasource")
+        datasources = [row[0] for row in cursor.fetchall()]
+        conn.close()
+        return datasources
     except Exception as e:
-        print(f"Failed to fetch datasources: {e}")
+        print(f"Failed to fetch datasources from MariaDB: {e}")
         return []
 
 def extract_from_druid(datasource):
@@ -193,7 +197,7 @@ def main():
     print("Starting real Data Lake synchronization service...")
     while True:
         if SOURCE_TYPE == "druid":
-            datasources = get_druid_datasources()
+            datasources = get_metatron_datasources()
             
             # 1. Extract and upload all active datasources
             for ds in datasources:
