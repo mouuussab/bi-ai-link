@@ -22,13 +22,4 @@ echo "   - MinIO Data Lake: http://localhost:9001"
 echo "   - To view sync logs: docker compose logs -f sync-worker"
 echo ""
 
-# 3. Start Rivus AI Frontend (assuming it's in the sibling directory)
-if [ -d "../rivus-ai" ]; then
-    echo "💻 Starting Rivus AI Frontend..."
-    echo "========================================"
-    cd ../rivus-ai
-    npm run dev
-else
-    echo "⚠️ Warning: 'rivus-ai' directory not found next to 'bi-ai-link'."
-    echo "You can start Rivus AI manually."
-fi
+
