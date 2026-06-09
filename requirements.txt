@@ -7,3 +7,5 @@ requests==2.31.0
 pandas==2.1.1
 pydruid==0.6.5
 kafka-python==2.1.0
+sqlalchemy==2.0.21
+numpy<2.0

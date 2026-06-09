@@ -97,29 +97,37 @@ def extract_from_rivus_bi():
         df = pd.DataFrame(mock_data)
         return df, filename
 
-def extract_from_druid():
-    print(f"[{datetime.now()}] Connecting to rivus-bi Apache Druid...")
+def get_druid_datasources():
+    print(f"[{datetime.now()}] Fetching list of datasources from Apache Druid...")
     try:
         if DRUID_HOST == "localhost" or not DRUID_HOST:
-            raise Exception("No real Druid host configured. Falling back to simulation.")
-            
-        # Connect to Druid's SQL endpoint
-        engine = druid_db.create_engine(f"druid://{DRUID_HOST}:{DRUID_PORT}/druid/v2/sql/")
-        
-        # Query the analytics data from Druid
-        query = f"SELECT * FROM {DRUID_DATASOURCE} LIMIT 1000"
-        df = pd.read_sql(query, engine)
-        return df
+            return []
+        import requests
+        query = "SELECT datasource FROM sys.segments GROUP BY 1"
+        url = f"http://{DRUID_HOST}:{DRUID_PORT}/druid/v2/sql/"
+        response = requests.post(url, json={"query": query}, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        return [row['datasource'] for row in data]
     except Exception as e:
-        print(f"Druid connection failed: {e}")
-        print(">>> SIMULATION MODE: Generating fake Druid analytics data instead.")
-        
-        mock_data = {
-            "timestamp": [datetime.now().isoformat()] * 3,
-            "region": ["US", "EU", "APAC"],
-            "revenue": [15000.50, 12000.00, 9500.75]
-        }
-        return pd.DataFrame(mock_data)
+        print(f"Failed to fetch datasources: {e}")
+        return []
+
+def extract_from_druid(datasource):
+    print(f"[{datetime.now()}] Extracting {datasource} from Apache Druid...")
+    try:
+        import requests
+        query = f"SELECT * FROM {datasource} LIMIT 100000"
+        url = f"http://{DRUID_HOST}:{DRUID_PORT}/druid/v2/sql/"
+        response = requests.post(url, json={"query": query}, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        if not data:
+            return pd.DataFrame()
+        return pd.DataFrame(data)
+    except Exception as e:
+        print(f"Extraction failed for {datasource}: {e}")
+        return None
 
 def load_to_minio_data_lake(df, filename="rivus_bi_export.csv"):
     if df is None or df.empty:
@@ -148,7 +156,9 @@ def notify_rivus_ai(filename="rivus_bi_export.csv"):
         # Example POST request to rivus-ai to tell it new data is available in MinIO
         payload = {
             "data_lake_url": f"http://{MINIO_ENDPOINT}/{BUCKET_NAME}/{filename}",
-            "source": "rivus-bi"
+            "source": "rivus-bi",
+            "bucket": BUCKET_NAME,
+            "key": filename
         }
         print(f"Sending payload to {RIVUS_AI_URL}: {payload}")
         # Send the actual POST request
@@ -182,22 +192,45 @@ def notify_kafka(filename="rivus_bi_export.csv"):
 def main():
     print("Starting real Data Lake synchronization service...")
     while True:
-        # 1. Extract data from rivus-bi (Metatron MySQL or Druid)
         if SOURCE_TYPE == "druid":
-            df = extract_from_druid()
-            filename = f"{DRUID_DATASOURCE}.csv"
+            datasources = get_druid_datasources()
+            if not datasources:
+                # Fallback to simulation if druid fails
+                df = pd.DataFrame({
+                    "timestamp": [datetime.now().isoformat()] * 3,
+                    "region": ["US", "EU", "APAC"],
+                    "revenue": [15000.50, 12000.00, 9500.75]
+                })
+                filename = f"{DRUID_DATASOURCE}.csv"
+                if load_to_minio_data_lake(df, filename=filename):
+                    notify_rivus_ai(filename)
+                    notify_kafka(filename)
+            else:
+                for ds in datasources:
+                    df = extract_from_druid(ds)
+                    if df is not None:
+                        filename = f"{ds}.csv"
+                        if load_to_minio_data_lake(df, filename=filename):
+                            notify_rivus_ai(filename)
+                            notify_kafka(filename)
+                
+                # Cleanup deleted datasources from MinIO
+                try:
+                    objects = s3_client.list_objects_v2(Bucket=BUCKET_NAME).get('Contents', [])
+                    valid_filenames = {f"{ds}.csv" for ds in datasources}
+                    for obj in objects:
+                        key = obj['Key']
+                        if key.endswith('.csv') and key not in valid_filenames:
+                            print(f"[{datetime.now()}] Deleting {key} from Data Lake as it was removed from Metatron.")
+                            s3_client.delete_object(Bucket=BUCKET_NAME, Key=key)
+                except Exception as e:
+                    print(f"Cleanup failed: {e}")
         else:
             df, filename = extract_from_rivus_bi()
-        
-        # 2. Load the data into the MinIO Data Lake
-        success = load_to_minio_data_lake(df, filename=filename)
-        
-        # 3. If new data was uploaded, notify rivus-ai and Kafka consumers
-        if success:
-            notify_rivus_ai(filename)
-            notify_kafka(filename)
+            if load_to_minio_data_lake(df, filename=filename):
+                notify_rivus_ai(filename)
+                notify_kafka(filename)
             
-        # Wait 1 minute before checking again
         time.sleep(60)
 
 if __name__ == "__main__":

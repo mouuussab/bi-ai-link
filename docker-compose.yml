@@ -53,16 +53,21 @@ services:
   sync-worker:
     build: .
     container_name: datalake-sync-worker
+    command: python sync_worker.py
     environment:
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=admin
       - MINIO_SECRET_KEY=password123
-      - MYSQL_HOST=your_rivus_bi_mysql_host
+      - SOURCE_TYPE=druid
+      - DRUID_HOST=nifty_bell
+      - DRUID_PORT=8082
+      - DRUID_DATASOURCE=test_data
+      - MYSQL_HOST=172.17.0.2
       - MYSQL_PORT=3306
       - MYSQL_USER=root
-      - MYSQL_PASSWORD=root_password
-      - MYSQL_DATABASE=metatron
-      - RIVUS_AI_URL=http://your_rivus_ai_host:port/api/refresh
+      - MYSQL_PASSWORD=
+      - MYSQL_DATABASE=polaris_v2
+      - RIVUS_AI_URL=http://rivus-ai:8000/import
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
     depends_on:
       - minio

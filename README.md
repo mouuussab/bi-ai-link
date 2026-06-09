@@ -1,59 +1,64 @@
 # BI-AI Link Data Lake
 
-This repository contains the **Data Lake synchronization layer** that acts as a real-time bridge between **Metatron (rivus-bi)** and **Data Formulator (rivus-ai)**.
+This repository contains the **Data Lake synchronization layer** that acts as a real-time, automated bridge between **Metatron Discovery (rivus-bi)** and **Data Formulator (rivus-ai)**. 
 
-## The Data Lake Architecture
+Because Metatron does not have a native option to stream its internal data directly to external AI tools, this project sets up a real **Data Lake** using **MinIO** to act as a centralized hub and a background worker to constantly mirror data.
 
-Because **rivus-bi** does not have a native option to export data, this project sets up a real Data Lake using **MinIO** (an S3-compatible Object Storage system) to act as the centralized hub.
+## 🚀 How it Works (Start to Finish)
 
-**How it works (Real Integration, No Simulation):**
-1. **Extraction**: A Python background worker (`sync_worker.py`) directly connects to rivus-bi's underlying metadata database (MariaDB/MySQL). It queries the database every 60 seconds to detect any new data or modifications that came from other resources or user actions.
-2. **Data Lake Storage**: The worker pulls this data into a Pandas DataFrame and physically exports it as a CSV (or JSON/Parquet) file directly into the **MinIO Data Lake** bucket (`rivus-data`).
-3. **Notification/Sync**: Once the file is physically secured in the Data Lake, the worker sends an API request to **rivus-ai**, passing the MinIO URL of the new data. Rivus-ai then ingests this file instantly. 
+The entire synchronization process is fully automated and requires **Zero Configuration** when adding new data. 
 
-This ensures that within 1 minute, any new data entering rivus-bi is physically mirrored in the Data Lake and available in rivus-ai automatically.
+1. **User Action in Metatron (rivus-bi)**
+   Users upload raw files, connect to external databases, or use "Data Preparation" to clean data. As long as the final data is saved/ingested as a **Data Source** in Metatron, it enters Metatron's fast-engine (Apache Druid).
 
-## Getting Started
+2. **Dynamic Extraction (`sync-worker`)**
+   A Python background service runs continuously. Every 60 seconds, it queries Metatron's Druid engine via REST API to ask for a list of *all* currently available Data Sources. 
+   For every Data Source it finds, it extracts the data into a Pandas DataFrame.
+
+3. **Data Lake Storage (MinIO)**
+   The worker immediately uploads this extracted data as a physical CSV file into the **MinIO Data Lake** bucket (`rivus-data`). If the data has been modified in Metatron, the CSV file in the Data Lake is silently overwritten with the newest version.
+
+4. **Automatic Cleanup (Deletion Syncing)**
+   The worker also compares the files inside the Data Lake against the active Data Sources in Metatron. If a user deletes a Data Source inside Metatron, the worker will detect it's missing and automatically delete the corresponding CSV file from the Data Lake.
+
+5. **AI Ingestion (rivus-ai)**
+   Inside **Rivus AI**, users use the "Load from URL" feature (pointing to `http://localhost:9000/rivus-data/<dataset_name>.csv`) and enable **auto-refresh**. Whenever the worker updates the Data Lake file in the background, Rivus AI seamlessly auto-refreshes the charts.
+
+---
+
+## 🛠️ The Technology Stack (Used Tools)
+
+Here is a breakdown of the tools used in this ecosystem and their purpose:
+
+* **Apache Druid (inside Metatron)**: This is the high-performance analytics database where Metatron stores all of its "Data Sources". Our worker hooks directly into its SQL REST API to extract the active data.
+* **MinIO**: A high-performance, S3-compatible object storage server. It serves as our "Data Lake". It is lightweight, scalable, and provides public URLs that Rivus AI can directly stream data from.
+* **Python (Sync Worker)**: The brain of the operation. It uses libraries like `requests` (to query Druid), `pandas` (to process tabular data), and `boto3` (to communicate with the MinIO S3 API). 
+* **Docker & Docker Compose**: Used to orchestrate the MinIO data lake, the sync worker, and networking (bridging the `datalake` network with the `nifty_bell` bridge network).
+* **Kafka & Zookeeper (Redpanda)**: *Scalability layer.* Included in the infrastructure stack to broadcast real-time update events (e.g., "new data available") to multiple downstream consumers or agents.
+
+---
+
+## 🔧 Getting Started
 
 ### Prerequisites
 - Docker and Docker Compose
-- The actual connection strings to your `rivus-bi` MariaDB/MySQL server.
-- The actual API endpoint for `rivus-ai` to trigger a refresh.
-
-### Setup
-
-Open `docker-compose.yml` and modify the environment variables under `sync-worker` to match your actual servers:
-
-```yaml
-      - MYSQL_HOST=your_rivus_bi_mysql_host
-      - MYSQL_PORT=3306
-      - MYSQL_USER=root
-      - MYSQL_PASSWORD=root_password
-      - MYSQL_DATABASE=metatron
-      - RIVUS_AI_URL=http://your_rivus_ai_host:port/api/refresh
-```
-
-*Note: You must also modify the SQL query inside `sync_worker.py` (around line 38) to select the exact tables (e.g., `datasource` or `dataset`) you want to extract from Metatron.*
+- Metatron Discovery (`nifty_bell` container) running on the same host
 
 ### Running the Services
-
-To spin up the Data Lake (MinIO) and the Synchronization Worker:
+The sync-worker relies on Metatron's Docker network. Make sure the container `nifty_bell` is attached to the default bi-ai-link network, and run:
 
 ```bash
 docker-compose up --build -d
 ```
 
 ### Accessing the Data Lake
-
-You can manually inspect the Data Lake and see the files being transferred from rivus-bi:
+You can manually inspect the Data Lake to see all synced CSV files:
 - **MinIO Console**: `http://localhost:9001`
 - **Username**: `admin`
 - **Password**: `password123`
 
 ### Checking Logs
-
-To ensure the worker is successfully extracting from MySQL and uploading to MinIO:
-
+To ensure the worker is successfully looping and syncing:
 ```bash
 docker-compose logs -f sync-worker
 ```
