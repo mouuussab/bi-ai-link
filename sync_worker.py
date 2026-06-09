@@ -7,6 +7,7 @@ from pydruid.db import sqlalchemy as druid_db
 import pandas as pd
 import requests
 from datetime import datetime
+from kafka import KafkaProducer
 
 # MinIO (Data Lake) Configuration
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "minio:9000")
@@ -16,6 +17,9 @@ BUCKET_NAME = "rivus-data"
 
 # rivus-bi Data Source Configuration
 SOURCE_TYPE = os.getenv("SOURCE_TYPE", "druid") # 'mysql' or 'druid'
+
+# Which Metatron dataset/table to export (defaults to the dataset you mentioned)
+TARGET_DATASET = os.getenv("TARGET_DATASET", "ohlcv_test_data")
 
 # MySQL Configuration
 MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
@@ -40,8 +44,25 @@ s3_client = boto3.client(
     config=boto3.session.Config(signature_version='s3v4')
 )
 
+# Kafka producer (Redpanda) initialization
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "redpanda:9092")
+try:
+    producer = KafkaProducer(
+        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        value_serializer=lambda v: json.dumps(v).encode('utf-8')
+    )
+    print(f"Kafka producer initialized to {KAFKA_BOOTSTRAP_SERVERS}")
+except Exception as e:
+    print(f"Failed to initialize Kafka producer: {e}")
+    producer = None
+
 def extract_from_rivus_bi():
-    print(f"[{datetime.now()}] Connecting to rivus-bi MariaDB...")
+    """Extract target dataset from Metatron's MySQL metadata DB.
+    Falls back to simulation if DB isn't reachable.
+    Returns a tuple (df, filename) where filename is the object name to store in MinIO.
+    """
+    print(f"[{datetime.now()}] Connecting to rivus-bi MariaDB to read dataset '{TARGET_DATASET}'...")
+    filename = f"{TARGET_DATASET}.csv"
     try:
         # If no host is provided or if we explicitly want to simulate
         if MYSQL_HOST == "your_rivus_bi_mysql_host" or not MYSQL_HOST:
@@ -54,23 +75,27 @@ def extract_from_rivus_bi():
             password=MYSQL_PASSWORD,
             database=MYSQL_DATABASE
         )
-        
-        query = "SHOW TABLES;" 
+
+        # Attempt to select the target dataset/table. If it doesn't exist this will raise and fall back to simulation.
+        query = f"SELECT * FROM {TARGET_DATASET} LIMIT 100000"
         df = pd.read_sql(query, conn)
         conn.close()
-        return df
+        return df, filename
     except Exception as e:
-        print(f"MySQL connection failed: {e}")
+        print(f"MySQL read failed for dataset '{TARGET_DATASET}': {e}")
         print(">>> SIMULATION MODE: Generating fake rivus-bi data instead.")
-        
+
         # Create a mock Pandas DataFrame to simulate rivus-bi data
         mock_data = {
-            "id": [1, 2, 3],
-            "dataset_name": ["sales_q1", "user_growth", "revenue_2026"],
-            "status": ["active", "active", "processing"],
-            "last_updated": [datetime.now().isoformat()] * 3
+            "timestamp": [datetime.now().isoformat()] * 3,
+            "open": [100, 101, 102],
+            "high": [110, 111, 112],
+            "low": [90, 91, 92],
+            "close": [105, 106, 107],
+            "volume": [1000, 1100, 1200]
         }
-        return pd.DataFrame(mock_data)
+        df = pd.DataFrame(mock_data)
+        return df, filename
 
 def extract_from_druid():
     print(f"[{datetime.now()}] Connecting to rivus-bi Apache Druid...")
@@ -117,12 +142,12 @@ def load_to_minio_data_lake(df, filename="rivus_bi_export.csv"):
         print(f"Error uploading to MinIO: {e}")
         return False
 
-def notify_rivus_ai():
-    print(f"[{datetime.now()}] Notifying rivus-ai to sync new data from the Data Lake...")
+def notify_rivus_ai(filename="rivus_bi_export.csv"):
+    print(f"[{datetime.now()}] Notifying rivus-ai to sync new data from the Data Lake: {filename}...")
     try:
         # Example POST request to rivus-ai to tell it new data is available in MinIO
         payload = {
-            "data_lake_url": f"http://{MINIO_ENDPOINT}/{BUCKET_NAME}/rivus_bi_export.csv",
+            "data_lake_url": f"http://{MINIO_ENDPOINT}/{BUCKET_NAME}/{filename}",
             "source": "rivus-bi"
         }
         print(f"Sending payload to {RIVUS_AI_URL}: {payload}")
@@ -135,21 +160,42 @@ def notify_rivus_ai():
     except Exception as e:
         print(f"Error notifying rivus-ai: {e}")
 
+
+def notify_kafka(filename="rivus_bi_export.csv"):
+    print(f"[{datetime.now()}] Sending Kafka notification about new data: {filename}...")
+    if producer is None:
+        print("Kafka producer not initialized; skipping Kafka notification.")
+        return
+    try:
+        payload = {
+            "bucket": BUCKET_NAME,
+            "key": filename,
+            "timestamp": datetime.now().isoformat(),
+            "source": "rivus-bi"
+        }
+        producer.send("datalake.updates", payload)
+        producer.flush()
+        print("Kafka notification sent.")
+    except Exception as e:
+        print(f"Failed to send Kafka notification: {e}")
+
 def main():
     print("Starting real Data Lake synchronization service...")
     while True:
         # 1. Extract data from rivus-bi (Metatron MySQL or Druid)
         if SOURCE_TYPE == "druid":
             df = extract_from_druid()
+            filename = f"{DRUID_DATASOURCE}.csv"
         else:
-            df = extract_from_rivus_bi()
+            df, filename = extract_from_rivus_bi()
         
         # 2. Load the data into the MinIO Data Lake
-        success = load_to_minio_data_lake(df)
+        success = load_to_minio_data_lake(df, filename=filename)
         
-        # 3. If new data was uploaded, notify rivus-ai
+        # 3. If new data was uploaded, notify rivus-ai and Kafka consumers
         if success:
-            notify_rivus_ai()
+            notify_rivus_ai(filename)
+            notify_kafka(filename)
             
         # Wait 1 minute before checking again
         time.sleep(60)

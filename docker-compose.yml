@@ -27,6 +27,29 @@ services:
       exit 0;
       "
 
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: datalake-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: datalake-kafka
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    ports:
+      - "9092:9092"
+
   sync-worker:
     build: .
     container_name: datalake-sync-worker
@@ -40,8 +63,30 @@ services:
       - MYSQL_PASSWORD=root_password
       - MYSQL_DATABASE=metatron
       - RIVUS_AI_URL=http://your_rivus_ai_host:port/api/refresh
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
     depends_on:
       - minio
+      - kafka
+    volumes:
+      - .:/app
+
+  rivus-ai:
+    build: .
+    container_name: datalake-rivus-ai
+    command: uvicorn rivus_ai_consumer:app --host 0.0.0.0 --port 8000
+    environment:
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=admin
+      - MINIO_SECRET_KEY=password123
+      - BUCKET_NAME=rivus-data
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - KAFKA_TOPIC=datalake.updates
+      - IMPORT_DIR=/app/imports
+    depends_on:
+      - minio
+      - kafka
+    ports:
+      - "8000:8000"
     volumes:
       - .:/app
 
