@@ -45,11 +45,16 @@ Here is a breakdown of the tools used in this ecosystem and their purpose:
 - Metatron Discovery (`nifty_bell` container) running on the same host
 
 ### Running the Services
-The sync-worker relies on Metatron's Docker network. Make sure the container `nifty_bell` is attached to the default bi-ai-link network, and run:
+To launch the entire ecosystem (Data Lake, Sync Worker, Network Bridging, and Rivus AI Frontend) in one command, simply run the provided startup script:
 
 ```bash
-docker-compose up --build -d
+./start.sh
 ```
+
+What `start.sh` does:
+1. Boots up the MinIO Data Lake and background worker via Docker Compose.
+2. Automatically bridges the Metatron (`nifty_bell`) container network to the Data Lake so they can communicate.
+3. Detects your local `rivus-ai` directory and launches the AI Frontend.
 
 ### Accessing the Data Lake
 You can manually inspect the Data Lake to see all synced CSV files:
