@@ -103,7 +103,7 @@ def get_druid_datasources():
         if DRUID_HOST == "localhost" or not DRUID_HOST:
             return []
         import requests
-        query = "SELECT datasource FROM sys.segments WHERE is_active = 1 GROUP BY 1"
+        query = "SELECT datasource FROM sys.segments WHERE is_published = 1 AND is_available = 1 GROUP BY 1"
         url = f"http://{DRUID_HOST}:{DRUID_PORT}/druid/v2/sql/"
         response = requests.post(url, json={"query": query}, timeout=15)
         response.raise_for_status()
