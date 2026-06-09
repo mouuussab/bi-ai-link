@@ -103,7 +103,7 @@ def get_druid_datasources():
         if DRUID_HOST == "localhost" or not DRUID_HOST:
             return []
         import requests
-        query = "SELECT datasource FROM sys.segments GROUP BY 1"
+        query = "SELECT datasource FROM sys.segments WHERE is_active = 1 GROUP BY 1"
         url = f"http://{DRUID_HOST}:{DRUID_PORT}/druid/v2/sql/"
         response = requests.post(url, json={"query": query}, timeout=15)
         response.raise_for_status()
@@ -194,44 +194,35 @@ def main():
     while True:
         if SOURCE_TYPE == "druid":
             datasources = get_druid_datasources()
-            if not datasources:
-                # Fallback to simulation if druid fails
-                df = pd.DataFrame({
-                    "timestamp": [datetime.now().isoformat()] * 3,
-                    "region": ["US", "EU", "APAC"],
-                    "revenue": [15000.50, 12000.00, 9500.75]
-                })
-                filename = f"{DRUID_DATASOURCE}.csv"
-                if load_to_minio_data_lake(df, filename=filename):
-                    notify_rivus_ai(filename)
-                    notify_kafka(filename)
-            else:
-                for ds in datasources:
-                    df = extract_from_druid(ds)
-                    if df is not None:
-                        filename = f"{ds}.csv"
-                        if load_to_minio_data_lake(df, filename=filename):
-                            notify_rivus_ai(filename)
-                            notify_kafka(filename)
-                
-                # Cleanup deleted datasources from MinIO
-                try:
-                    objects = s3_client.list_objects_v2(Bucket=BUCKET_NAME).get('Contents', [])
-                    valid_filenames = {f"{ds}.csv" for ds in datasources}
-                    for obj in objects:
-                        key = obj['Key']
-                        if key.endswith('.csv') and key not in valid_filenames:
-                            print(f"[{datetime.now()}] Deleting {key} from Data Lake as it was removed from Metatron.")
-                            s3_client.delete_object(Bucket=BUCKET_NAME, Key=key)
-                except Exception as e:
-                    print(f"Cleanup failed: {e}")
+            
+            # 1. Extract and upload all active datasources
+            for ds in datasources:
+                df = extract_from_druid(ds)
+                if df is not None and not df.empty:
+                    filename = f"{ds}.csv"
+                    if load_to_minio_data_lake(df, filename=filename):
+                        notify_rivus_ai(filename)
+                        notify_kafka(filename)
+            
+            # 2. Cleanup deleted datasources from MinIO
+            try:
+                objects = s3_client.list_objects_v2(Bucket=BUCKET_NAME).get('Contents', [])
+                valid_filenames = {f"{ds}.csv" for ds in datasources}
+                for obj in objects:
+                    key = obj['Key']
+                    if key.endswith('.csv') and key not in valid_filenames:
+                        print(f"[{datetime.now()}] Deleting {key} from Data Lake as it was removed from Metatron.")
+                        s3_client.delete_object(Bucket=BUCKET_NAME, Key=key)
+            except Exception as e:
+                print(f"Cleanup failed: {e}")
         else:
             df, filename = extract_from_rivus_bi()
             if load_to_minio_data_lake(df, filename=filename):
                 notify_rivus_ai(filename)
                 notify_kafka(filename)
             
-        time.sleep(60)
+        # Wait 10 seconds before checking again for near-instant synchronization
+        time.sleep(10)
 
 if __name__ == "__main__":
     # Wait for MinIO to initialize
