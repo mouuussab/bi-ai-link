@@ -8,6 +8,13 @@ import pandas as pd
 import requests
 from datetime import datetime
 from kafka import KafkaProducer
+import re
+
+def clean_datasource_name(ds_name):
+    """Strips numbered suffixes (like _1, _2) to return a stable base name."""
+    # Strip any trailing numbers (e.g., _1, _2)
+    clean = re.sub(r'_\d+$', '', ds_name)
+    return clean
 
 # MinIO (Data Lake) Configuration
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "minio:9000")
@@ -197,19 +204,29 @@ def main():
         if SOURCE_TYPE == "druid":
             datasources = get_rivus_bi_datasources()
             
-            # 1. Extract and upload all active datasources if they changed
+            # Group by clean name and find the newest physical datasource
+            clean_to_newest_ds = {}
             for ds, version in datasources.items():
-                if last_sync_state.get(ds) != version:
+                clean_name = clean_datasource_name(ds)
+                if clean_name not in clean_to_newest_ds:
+                    clean_to_newest_ds[clean_name] = (ds, version)
+                else:
+                    if version > clean_to_newest_ds[clean_name][1]:
+                        clean_to_newest_ds[clean_name] = (ds, version)
+            
+            # 1. Extract and upload all active datasources if they changed
+            for clean_name, (ds, version) in clean_to_newest_ds.items():
+                if last_sync_state.get(clean_name) != version:
                     df = extract_from_druid(ds)
                     if df is not None and not df.empty:
-                        filename = f"{ds}.csv"
+                        filename = f"{clean_name}.csv"
                         if load_to_minio_data_lake(df, filename=filename):
-                            last_sync_state[ds] = version
+                            last_sync_state[clean_name] = version
             
             # 2. Cleanup deleted datasources from MinIO
             try:
                 objects = s3_client.list_objects_v2(Bucket=BUCKET_NAME).get('Contents', [])
-                valid_filenames = {f"{ds}.csv" for ds in datasources.keys()}
+                valid_filenames = {f"{clean_name}.csv" for clean_name in clean_to_newest_ds.keys()}
                 for obj in objects:
                     key = obj['Key']
                     if key.endswith('.csv') and key not in valid_filenames:
