@@ -1,68 +1,65 @@
-# BI-AI Link Data Lake
+# Rivus BI to AI Link (bi-ai-link)
 
-This repository contains the **Data Lake synchronization layer** that acts as a real-time, automated bridge between **Rivus BI Discovery (rivus-bi)** and **Data Formulator (rivus-ai)**. 
+Welcome! This repository acts as the magical "Bridge" between your business intelligence data and artificial intelligence. 
 
-Because Rivus BI does not have a native option to stream its internal data directly to external AI tools, this project sets up a real **Data Lake** using **MinIO** to act as a centralized hub and a background worker to constantly mirror data.
+Specifically, this repository links **[Rivus BI](https://github.com/mouuussab/rivus-bi)** (where you prepare and clean your data) to **[Rivus AI](https://github.com/mouuussab/rivus-ai)** (where you chat with your data and generate amazing charts).
 
-## 🚀 How it Works (Start to Finish)
+If you are a complete beginner, this guide will explain everything you need to know in plain English!
 
-The entire synchronization process is fully automated and requires **Zero Configuration** when adding new data. 
+## What does this actually do?
 
-1. **User Action in Rivus BI (rivus-bi)**
-   Users upload raw files, connect to external databases, or use "Data Preparation" to clean data. As long as the final data is saved/ingested as a **Data Source** in Rivus BI, it enters Rivus BI's fast-engine (Apache Druid).
+When you clean your data in Rivus BI and click "Run" to create a snapshot, that data gets locked inside a specialized database (Apache Druid). Rivus AI cannot read that database directly. 
 
-2. **Dynamic Extraction (`sync-worker`)**
-   A Python background service runs continuously. Every 60 seconds, it queries Rivus BI's Druid engine via REST API to ask for a list of *all* currently available Data Sources. 
-   For every Data Source it finds, it extracts the data into a Pandas DataFrame.
+This repository runs two things to fix that:
+1. **MinIO Data Lake**: A localized file storage system (similar to Amazon S3 or Google Drive) that runs directly on your computer.
+2. **The Sync Worker**: A smart Python robot that runs constantly in the background. Every 3 seconds, it checks Rivus BI to see if you have created any new data snapshots. If it finds new data, it extracts it, cleans up the filename, and saves it as a crisp `.csv` file into the MinIO Data Lake.
 
-3. **Data Lake Storage (MinIO)**
-   The worker immediately uploads this extracted data as a physical CSV file into the **MinIO Data Lake** bucket (`rivus-data`). If the data has been modified in Rivus BI, the CSV file in the Data Lake is silently overwritten with the newest version.
+Once the data is in the Data Lake, **Rivus AI** can instantly fetch it and start chatting with it!
 
-4. **Automatic Cleanup (Deletion Syncing)**
-   The worker also compares the files inside the Data Lake against the active Data Sources in Rivus BI. If a user deletes a Data Source inside Rivus BI, the worker will detect it's missing and automatically delete the corresponding CSV file from the Data Lake.
+## Prerequisites
 
-5. **AI Ingestion (rivus-ai)**
-   Inside **Rivus AI**, users use the "Load from URL" feature (pointing to `http://localhost:9000/rivus-data/<dataset_name>.csv`) and enable **auto-refresh**. Whenever the worker updates the Data Lake file in the background, Rivus AI seamlessly auto-refreshes the charts.
+You only need **Docker** installed on your computer. Docker is a tool that allows these programs to run inside isolated "containers" so you don't have to install Python or databases on your personal machine.
+* [Download Docker Desktop](https://www.docker.com/products/docker-desktop/)
 
----
+## How to Start the Bridge
 
-## 🛠️ The Technology Stack (Used Tools)
+We have made this incredibly easy. You do not need to type any complex Docker commands.
 
-Here is a breakdown of the tools used in this ecosystem and their purpose:
+1. **Open your terminal** and navigate to this folder:
+   ```bash
+   cd /path/to/bi-ai-link
+   ```
 
-* **Apache Druid (inside Rivus BI)**: This is the high-performance analytics database where Rivus BI stores all of its "Data Sources". Our worker hooks directly into its SQL REST API to extract the active data.
-* **MinIO**: A high-performance, S3-compatible object storage server. It serves as our "Data Lake". It is lightweight, scalable, and provides public URLs that Rivus AI can directly stream data from.
-* **Python (Sync Worker)**: The brain of the operation. It uses libraries like `requests` (to query Druid), `pandas` (to process tabular data), and `boto3` (to communicate with the MinIO S3 API). 
-* **Docker & Docker Compose**: Used to orchestrate the MinIO data lake, the sync worker, and networking (bridging the `datalake` network with the `nifty_bell` bridge network).
-* **Kafka & Zookeeper (Redpanda)**: *Scalability layer.* Included in the infrastructure stack to broadcast real-time update events (e.g., "new data available") to multiple downstream consumers or agents.
+2. **Start the bridge** by running the start script:
+   ```bash
+   ./start.sh
+   ```
+   *What this script does:* 
+   - It turns on the MinIO Data Lake.
+   - It creates a dedicated "bucket" (folder) called `rivus-data` for your files.
+   - It starts the Python Sync Worker to begin watching Rivus BI.
 
----
+3. **Verify it is working**
+   You can view your Data Lake by opening your web browser and going to:
+   ```
+   http://localhost:9001
+   ```
+   *Login:* `admin` / `password123`
+   
+   If you look inside the `rivus-data` bucket, you will see your Rivus BI datasets sitting there as `.csv` files! You can now copy the download link for any of these files and paste it into **Rivus AI** to start chatting.
 
-## 🔧 Getting Started
+## How to Stop the Bridge
 
-### Prerequisites
-- Docker and Docker Compose
-- Rivus BI Discovery (`nifty_bell` container) running on the same host
+When you are completely finished working, you can safely turn the bridge off.
 
-### Running the Services
-To launch the Data Lake and Sync Worker infrastructure in one command, simply run the provided startup script:
+1. In your terminal, run:
+   ```bash
+   ./stop.sh
+   ```
+   This will cleanly shut down the Data Lake and the Sync Worker. Your data is perfectly safe and will still be there the next time you click start!
 
-```bash
-./start.sh
-```
+## Ecosystem Repositories
 
-What `start.sh` does:
-1. Boots up the MinIO Data Lake, Kafka, and the background worker via Docker Compose.
-2. Automatically bridges the Rivus BI (`nifty_bell`) container network to the Data Lake so they can communicate.
-
-### Accessing the Data Lake
-You can manually inspect the Data Lake to see all synced CSV files:
-- **MinIO Console**: `http://localhost:9001`
-- **Username**: `admin`
-- **Password**: `password123`
-
-### Checking Logs
-To ensure the worker is successfully looping and syncing:
-```bash
-docker-compose logs -f sync-worker
-```
+This project requires its two sibling projects to function fully. Make sure you check them out:
+* **[rivus-bi](https://github.com/mouuussab/rivus-bi)**: Start here to upload and prepare your data.
+* **[rivus-ai](https://github.com/mouuussab/rivus-ai)**: End here to chat with your prepared data and generate beautiful visualizations.
