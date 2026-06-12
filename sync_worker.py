@@ -18,7 +18,7 @@ BUCKET_NAME = "rivus-data"
 # rivus-bi Data Source Configuration
 SOURCE_TYPE = os.getenv("SOURCE_TYPE", "druid") # 'mysql' or 'druid'
 
-# Which Metatron dataset/table to export (defaults to the dataset you mentioned)
+# Which Rivus BI dataset/table to export (defaults to the dataset you mentioned)
 TARGET_DATASET = os.getenv("TARGET_DATASET", "ohlcv_test_data")
 
 # MySQL Configuration
@@ -26,7 +26,7 @@ MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
 MYSQL_PORT = int(os.getenv("MYSQL_PORT", 3306))
 MYSQL_USER = os.getenv("MYSQL_USER", "root")
 MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "root")
-MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "metatron")
+MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "rivus_bi")
 
 # Druid Configuration
 DRUID_HOST = os.getenv("DRUID_HOST", "localhost")
@@ -57,7 +57,7 @@ except Exception as e:
     producer = None
 
 def extract_from_rivus_bi():
-    """Extract target dataset from Metatron's MySQL metadata DB.
+    """Extract target dataset from Rivus BI's MySQL metadata DB.
     Falls back to simulation if DB isn't reachable.
     Returns a tuple (df, filename) where filename is the object name to store in MinIO.
     """
@@ -97,12 +97,12 @@ def extract_from_rivus_bi():
         df = pd.DataFrame(mock_data)
         return df, filename
 
-def get_metatron_datasources():
-    print(f"[{datetime.now()}] Fetching list of datasources from Metatron MariaDB...")
+def get_rivus_bi_datasources():
+    print(f"[{datetime.now()}] Fetching list of datasources from Rivus BI MariaDB...")
     try:
         import mysql.connector
         conn = mysql.connector.connect(
-            host=DRUID_HOST,  # Metatron MariaDB is on the same host
+            host=DRUID_HOST,  # Rivus BI MariaDB is on the same host
             port=3306,
             user='polaris',
             password='polaris',
@@ -197,7 +197,7 @@ def main():
     print("Starting real Data Lake synchronization service...")
     while True:
         if SOURCE_TYPE == "druid":
-            datasources = get_metatron_datasources()
+            datasources = get_rivus_bi_datasources()
             
             # 1. Extract and upload all active datasources
             for ds in datasources:
@@ -215,7 +215,7 @@ def main():
                 for obj in objects:
                     key = obj['Key']
                     if key.endswith('.csv') and key not in valid_filenames:
-                        print(f"[{datetime.now()}] Deleting {key} from Data Lake as it was removed from Metatron.")
+                        print(f"[{datetime.now()}] Deleting {key} from Data Lake as it was removed from Rivus BI.")
                         s3_client.delete_object(Bucket=BUCKET_NAME, Key=key)
             except Exception as e:
                 print(f"Cleanup failed: {e}")
