@@ -10,12 +10,7 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$DIR"
 docker compose up --build -d
 
-# Wait a moment for docker network to be created
-sleep 3
-
-# 2. Connect Metatron to the network
-echo "🔗 Bridging Metatron (metatron-engine) to the Data Lake network..."
-docker network connect bi-ai-link_default metatron-engine 2>/dev/null || echo "   (Metatron is already bridged)"
+# No need to bridge Metatron to the network since it's running natively on the host
 
 echo "✅ Background services are running!"
 echo "   - MinIO Data Lake: http://localhost:9001"

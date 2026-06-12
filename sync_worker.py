@@ -101,15 +101,15 @@ def get_rivus_bi_datasources():
     print(f"[{datetime.now()}] Fetching list of datasources from Apache Druid (UI agnostic)...")
     try:
         import requests
-        query = "SELECT datasource FROM sys.segments WHERE is_published = 1 AND is_available = 1 GROUP BY 1"
+        query = "SELECT datasource, MAX(version) as version FROM sys.segments WHERE is_published = 1 GROUP BY 1"
         url = f"http://{DRUID_HOST}:{DRUID_PORT}/druid/v2/sql/"
         response = requests.post(url, json={"query": query}, timeout=15)
         response.raise_for_status()
         data = response.json()
-        return [row['datasource'] for row in data]
+        return {row['datasource']: row['version'] for row in data}
     except Exception as e:
         print(f"Failed to fetch datasources from Druid: {e}")
-        return []
+        return {}
 
 def extract_from_druid(datasource):
     print(f"[{datetime.now()}] Extracting {datasource} from Apache Druid...")
@@ -148,29 +148,29 @@ def load_to_minio_data_lake(df, filename="rivus_bi_export.csv"):
         print(f"Error uploading to MinIO: {e}")
         return False
 
-def notify_rivus_ai(filename="rivus_bi_export.csv"):
-    print(f"[{datetime.now()}] Notifying rivus-ai to sync new data from the Data Lake: {filename}...")
+def notify_rivus_ai(filename="rivus_bi_export.csv", action="import"):
+    print(f"[{datetime.now()}] Notifying rivus-ai to {action} data: {filename}...")
     try:
-        # Example POST request to rivus-ai to tell it new data is available in MinIO
+        url = RIVUS_AI_URL if action == "import" else RIVUS_AI_URL.replace("/import", "/delete")
         payload = {
             "data_lake_url": f"http://{MINIO_ENDPOINT}/{BUCKET_NAME}/{filename}",
             "source": "rivus-bi",
             "bucket": BUCKET_NAME,
-            "key": filename
+            "key": filename,
+            "action": action
         }
-        print(f"Sending payload to {RIVUS_AI_URL}: {payload}")
-        # Send the actual POST request
-        response = requests.post(RIVUS_AI_URL, json=payload, timeout=5)
+        print(f"Sending payload to {url}: {payload}")
+        response = requests.post(url, json=payload, timeout=5)
         print(f"rivus-ai response: {response.status_code}")
     except requests.exceptions.RequestException as e:
-        print(f"Failed to reach rivus-ai at {RIVUS_AI_URL}. Simulation continuing.")
+        print(f"Failed to reach rivus-ai at {url}. Simulation continuing.")
         print(f"Error details: {e}")
     except Exception as e:
         print(f"Error notifying rivus-ai: {e}")
 
 
-def notify_kafka(filename="rivus_bi_export.csv"):
-    print(f"[{datetime.now()}] Sending Kafka notification about new data: {filename}...")
+def notify_kafka(filename="rivus_bi_export.csv", action="import"):
+    print(f"[{datetime.now()}] Sending Kafka notification ({action}): {filename}...")
     if producer is None:
         print("Kafka producer not initialized; skipping Kafka notification.")
         return
@@ -179,7 +179,8 @@ def notify_kafka(filename="rivus_bi_export.csv"):
             "bucket": BUCKET_NAME,
             "key": filename,
             "timestamp": datetime.now().isoformat(),
-            "source": "rivus-bi"
+            "source": "rivus-bi",
+            "action": action
         }
         producer.send("datalake.updates", payload)
         producer.flush()
@@ -187,40 +188,44 @@ def notify_kafka(filename="rivus_bi_export.csv"):
     except Exception as e:
         print(f"Failed to send Kafka notification: {e}")
 
+last_sync_state = {}
+
 def main():
+    global last_sync_state
     print("Starting real Data Lake synchronization service...")
     while True:
         if SOURCE_TYPE == "druid":
             datasources = get_rivus_bi_datasources()
             
-            # 1. Extract and upload all active datasources
-            for ds in datasources:
-                df = extract_from_druid(ds)
-                if df is not None and not df.empty:
-                    filename = f"{ds}.csv"
-                    if load_to_minio_data_lake(df, filename=filename):
-                        notify_rivus_ai(filename)
-                        notify_kafka(filename)
+            # 1. Extract and upload all active datasources if they changed
+            for ds, version in datasources.items():
+                if last_sync_state.get(ds) != version:
+                    df = extract_from_druid(ds)
+                    if df is not None and not df.empty:
+                        filename = f"{ds}.csv"
+                        if load_to_minio_data_lake(df, filename=filename):
+                            last_sync_state[ds] = version
             
             # 2. Cleanup deleted datasources from MinIO
             try:
                 objects = s3_client.list_objects_v2(Bucket=BUCKET_NAME).get('Contents', [])
-                valid_filenames = {f"{ds}.csv" for ds in datasources}
+                valid_filenames = {f"{ds}.csv" for ds in datasources.keys()}
                 for obj in objects:
                     key = obj['Key']
                     if key.endswith('.csv') and key not in valid_filenames:
                         print(f"[{datetime.now()}] Deleting {key} from Data Lake as it was removed from Rivus BI.")
                         s3_client.delete_object(Bucket=BUCKET_NAME, Key=key)
+                        ds_name = key[:-4]
+                        if ds_name in last_sync_state:
+                            del last_sync_state[ds_name]
             except Exception as e:
                 print(f"Cleanup failed: {e}")
         else:
             df, filename = extract_from_rivus_bi()
-            if load_to_minio_data_lake(df, filename=filename):
-                notify_rivus_ai(filename)
-                notify_kafka(filename)
+            load_to_minio_data_lake(df, filename=filename)
             
-        # Wait 10 seconds before checking again for near-instant synchronization
-        time.sleep(10)
+        # Wait 3 seconds before checking again for near-instant synchronization
+        time.sleep(3)
 
 if __name__ == "__main__":
     # Wait for MinIO to initialize

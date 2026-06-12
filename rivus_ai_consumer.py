@@ -65,7 +65,17 @@ def process_message(payload: dict):
     if not key:
         raise ValueError(f"Invalid payload, missing 'key': {payload}")
 
-    print(f"[{datetime.now()}] Processing update for {bucket}/{key}")
+    action = payload.get('action', 'import')
+    local_path = IMPORT_DIR / Path(key).name
+
+    print(f"[{datetime.now()}] Processing update for {bucket}/{key} with action {action}")
+
+    if action == 'delete':
+        if local_path.exists():
+            local_path.unlink()
+            print(f"Deleted local file {local_path}")
+        return str(local_path)
+
     local_file = download_from_minio(bucket, key)
 
     # Record last processed
@@ -157,6 +167,20 @@ def manual_import(payload: dict):
         return {"status": "imported", "file": local_file, "rows": []}
 
     return {"status": "imported", "file": local_file, "rows": rows}
+
+
+@app.post("/delete")
+def manual_delete(payload: dict):
+    """Manual delete endpoint. Removes the file from local imports."""
+    bucket = payload.get('bucket', BUCKET_NAME)
+    key = payload.get('key')
+    if not key:
+        raise HTTPException(status_code=400, detail="Missing 'key' in payload")
+    try:
+        process_message({'bucket': bucket, 'key': key, 'action': 'delete'})
+        return {"status": "deleted", "key": key}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Delete failed: {e}")
 
 
 @app.get("/last")
